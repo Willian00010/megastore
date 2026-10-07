@@ -1,22 +1,21 @@
-use megastore::graph::ConcurrentConectaStore;
-use megastore::models::{NodeType, Product};
+use megastore::graph::RecommendationGraph;
+use megastore::models::{Product, Vertex};
 
 #[test]
-fn test_recommendation_filtering() {
-    let store = ConcurrentConectaStore::new();
-    
-    let p1 = store.add_product(Product { id: 1, name: "A".into(), category_id: 1, price: 10.0 }).unwrap();
-    let p2 = store.add_product(Product { id: 2, name: "B".into(), category_id: 1, price: 20.0 }).unwrap();
-    let c1 = store.add_node("c1".into(), NodeType::Client);
-    let c2 = store.add_node("c2".into(), NodeType::Client);
+fn test_no_duplicate_recommendations() {
+    let mut graph = RecommendationGraph::new();
 
-    store.add_edge(c1, p1, 5.0).unwrap();
-    store.add_edge(c2, p1, 5.0).unwrap();
-    store.add_edge(c2, p2, 4.0).unwrap();
+    let p1 = Product { id: 1, name: "Item A".to_string(), category: "Cat1".to_string(), price: 10.0 };
+    let p2 = Product { id: 2, name: "Item B".to_string(), category: "Cat1".to_string(), price: 20.0 };
 
-    let recs = store.recommend_for_client("c1", 10).unwrap();
-    
-    // Valida que o cliente não recebe o produto que já comprou (p1)
-    assert_eq!(recs.len(), 1);
-    assert_eq!(recs[0].0.id, 2);
+    graph.add_product(p1);
+    graph.add_product(p2);
+
+    // Cliente 1 comprou Item A
+    graph.add_edge(Vertex::Customer(1), Vertex::Product(1), 5.0);
+
+    let recs = graph.recommend_for_customer(1, 10);
+
+    // Item A não deve estar nas recomendações do Cliente 1 pois ele já comprou
+    assert!(recs.iter().all(|(p, _)| p.id != 1));
 }

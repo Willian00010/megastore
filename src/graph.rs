@@ -1,115 +1,100 @@
-use crate::models::{Edge, NodeIndex, NodeType, Product, StoreError};
-use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::Arc;
+use crate::models::{Edge, Product, Vertex};
 
-pub struct GraphCore {
-    node_map: HashMap<String, NodeIndex>,
-    node_types: Vec<NodeType>,
-    products: HashMap<NodeIndex, Product>,
-    adjacency_list: Vec<Vec<Edge>>,
+pub struct RecommendationGraph {
+    adj_list: HashMap<Vertex, Vec<Edge>>,
+    products: HashMap<u64, Product>,
 }
 
-#[derive(Clone)]
-pub struct ConcurrentConectaStore {
-    inner: Arc<RwLock<GraphCore>>,
-}
-
-impl ConcurrentConectaStore {
+impl RecommendationGraph {
     pub fn new() -> Self {
         Self {
-            inner: Arc::new(RwLock::new(GraphCore {
-                node_map: HashMap::new(),
-                node_types: Vec::new(),
-                products: HashMap::new(),
-                adjacency_list: Vec::new(),
-            })),
+            adj_list: HashMap::new(),
+            products: HashMap::new(),
         }
     }
 
-    pub fn add_node(&self, external_key: String, node_type: NodeType) -> NodeIndex {
-        let mut core = self.inner.write();
-        if let Some(&idx) = core.node_map.get(&external_key) {
-            return idx;
-        }
+    pub fn add_product(&mut self, product: Product) {
+        let p_vertex = Vertex::Product(product.id);
+        let c_vertex = Vertex::Category(product.category.clone());
 
-        let idx = core.node_types.len();
-        core.node_map.insert(external_key, idx);
-        core.node_types.push(node_type);
-        core.adjacency_list.push(Vec::new());
-        idx
+        self.products.insert(product.id, product);
+
+        // Conecta produto à sua categoria com peso 2.0 (relação fraca/estrutural)
+        self.add_edge(p_vertex, c_vertex, 2.0);
     }
 
-    pub fn add_product(&self, product: Product) -> Result<NodeIndex, StoreError> {
-        let key = format!("prod_{}", product.id);
-        let idx = self.add_node(key, NodeType::Product);
-        
-        let mut core = self.inner.write();
-        core.products.insert(idx, product);
-        Ok(idx)
+    pub fn get_product(&self, id: u64) -> Option<&Product> {
+        self.products.get(&id)
     }
 
-    pub fn add_edge(&self, source: NodeIndex, target: NodeIndex, weight: f32) -> Result<(), StoreError> {
-        let mut core = self.inner.write();
-        let len = core.node_types.len();
-        if source >= len || target >= len {
-            return Err(StoreError::NodeNotFound("Índice de nó inválido ao criar aresta".into()));
-        }
+    pub fn add_edge(&mut self, from: Vertex, to: Vertex, weight: f64) {
+        self.adj_list
+            .entry(from.clone())
+            .or_default()
+            .push(Edge { target: to.clone(), weight });
 
-        core.adjacency_list[source].push(Edge { target, weight });
-        core.adjacency_list[target].push(Edge { target: source, weight });
-        Ok(())
+        // Grafo não-direcionado para permitir navegação em via dupla
+        self.adj_list
+            .entry(to)
+            .or_default()
+            .push(Edge { target: from, weight });
     }
 
-    pub fn recommend_for_client(&self, client_key: &str, limit: usize) -> Result<Vec<(Product, f32)>, StoreError> {
-        let core = self.inner.read();
-        
-        let start_node = *core.node_map.get(client_key)
-            .ok_or_else(|| StoreError::NodeNotFound(client_key.to_string()))?;
-
+    /// Algoritmo de Busca em Largura (BFS) com cálculo de relevância ponderada
+    pub fn recommend_for_customer(&self, customer_id: u64, limit: usize) -> Vec<(Product, f64)> {
+        let start_vertex = Vertex::Customer(customer_id);
         let mut visited = HashSet::new();
+        let mut scores: HashMap<u64, f64> = HashMap::new();
         let mut queue = VecDeque::new();
-        let mut scores: HashMap<NodeIndex, f32> = HashMap::new();
-        let mut purchased_products = HashSet::new();
 
-        for edge in &core.adjacency_list[start_node] {
-            if core.node_types[edge.target] == NodeType::Product {
-                purchased_products.insert(edge.target);
-            }
-        }
-
-        visited.insert(start_node);
-        queue.push_back((start_node, 0, 1.0f32));
-
-        while let Some((current_node, depth, current_weight)) = queue.pop_front() {
-            if depth >= 3 {
-                continue;
-            }
-
-            for edge in &core.adjacency_list[current_node] {
-                if !visited.contains(&edge.target) {
-                    let next_weight = current_weight * edge.weight;
-                    
-                    if core.node_types[edge.target] == NodeType::Product && !purchased_products.contains(&edge.target) {
-                        *scores.entry(edge.target).or_insert(0.0) += next_weight;
-                    }
-
-                    visited.insert(edge.target);
-                    queue.push_back((edge.target, depth + 1, next_weight));
+        // HashSet para identificar produtos que o cliente JÁ comprou/interagiu diretamente
+        let mut direct_interactions = HashSet::new();
+        if let Some(edges) = self.adj_list.get(&start_vertex) {
+            for edge in edges {
+                if let Vertex::Product(pid) = edge.target {
+                    direct_interactions.insert(pid);
                 }
             }
         }
 
-        let mut ranked_products: Vec<(Product, f32)> = scores
+        visited.insert(start_vertex.clone());
+        queue.push_back((start_vertex, 0, 1.0)); // (Vértice, Profundidade, Peso Acumulado)
+
+        while let Some((curr, depth, weight_acc)) = queue.pop_front() {
+            if depth >= 3 {
+                continue; // Limita a profundidade a 3 saltos para evitar dispersão
+            }
+
+            if let Some(neighbors) = self.adj_list.get(&curr) {
+                for edge in neighbors {
+                    if !visited.contains(&edge.target) {
+                        let new_weight = weight_acc * edge.weight;
+
+                        if let Vertex::Product(pid) = edge.target {
+                            // Prevenção de recomendação duplicada de itens já adquiridos pelo cliente
+                            if !direct_interactions.contains(&pid) {
+                                *scores.entry(pid).or_insert(0.0) += new_weight;
+                            }
+                        }
+
+                        if depth + 1 < 3 {
+                            visited.insert(edge.target.clone());
+                            queue.push_back((edge.target.clone(), depth + 1, new_weight));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Ordenação das recomendações por relevância
+        let mut result: Vec<(Product, f64)> = scores
             .into_iter()
-            .filter_map(|(idx, score)| {
-                core.products.get(&idx).map(|prod| (prod.clone(), score))
-            })
+            .filter_map(|(pid, score)| self.products.get(&pid).cloned().map(|p| (p, score)))
             .collect();
 
-        ranked_products.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        ranked_products.truncate(limit);
-
-        Ok(ranked_products)
+        result.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        result.truncate(limit);
+        result
     }
 }
