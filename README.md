@@ -118,6 +118,6 @@ A medição do desempenho foi realizada utilizando o módulo `benchmark.rs`, var
 
 ## 8. Link do Vídeo Pitch
 
-- **Link do Vídeo no YouTube:** [Insira o Link Aqui]
+- **Link do Vídeo no YouTube:** [https://youtu.be/HisClAIKzwc]
 
 *(O vídeo demonstra o problema enfrentado pela MegaStore, a modelagem em grafo, a execução real do código no terminal e a análise das decisões de desempenho).*
